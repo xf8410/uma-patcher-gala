@@ -5,10 +5,7 @@ import android.content.pm.PackageManager
 
 object GameChecker {
     val packageNames = arrayOf(
-        "jp.co.cygames.umamusume",
-        "com.komoe.kmumamusumegp",
-        "com.komoe.umamusumeofficial",
-        "com.kakaogames.umamusume"
+        "com.galasports.legendaryfootball.cn"
     )
 
     var currentPackageName: String? = null

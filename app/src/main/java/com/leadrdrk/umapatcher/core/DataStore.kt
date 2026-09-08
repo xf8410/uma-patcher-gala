@@ -28,7 +28,7 @@ val defaultValues = mapOf(
     Pair(PrefKey.CHECK_FOR_UPDATES, true),
     Pair(PrefKey.LAST_UPDATE_CHECK, 0L),
     Pair(PrefKey.APP_LIBS_VERSION, ""),
-    Pair(PrefKey.HACHIMI_REPO, "kairusds/Hachimi-Edge"),
+    Pair(PrefKey.HACHIMI_REPO, "xf8410/hachimi-edge-gala"),
     Pair(PrefKey.USE_LATEST_VERSION, true),
     Pair(PrefKey.USE_UNIVERSAL_SIGNING_KEY, false),
     Pair(PrefKey.MERGE_APKS, false),
