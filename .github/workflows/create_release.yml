@@ -53,7 +53,7 @@ jobs:
             git tag $LATEST_TAG
           fi
 
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${LATEST_TAG}^")
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${LATEST_TAG}^" || true)
           if [ -z "$PREVIOUS_TAG" ]; then
             PREVIOUS_TAG=$(git rev-list --max-parents=0 HEAD)
           fi
