@@ -24,6 +24,7 @@ import com.leadrdrk.umapatcher.utils.downloadFileAndDigestSHA256
 import com.leadrdrk.umapatcher.utils.fetchJson
 import com.leadrdrk.umapatcher.utils.ksFile
 import com.leadrdrk.umapatcher.utils.universalKsFile
+import com.leadrdrk.umapatcher.utils.pluginsDir
 import com.leadrdrk.umapatcher.utils.workDir
 import com.leadrdrk.umapatcher.zip.ZipExtractor
 import com.reandroid.apk.ApkModule
@@ -45,6 +46,7 @@ import rikka.shizuku.ShizukuBinderWrapper
 import java.io.File
 import java.io.IOException
 import java.net.URL
+import java.security.MessageDigest
 
 private const val MOD_ARM64_LIB_NAME = "libmain-arm64-v8a.so"
 private const val APK_ARM64_LIB_DIR = "lib/arm64-v8a"
@@ -52,6 +54,9 @@ private const val APK_ARM64_LIB_PATH = "$APK_ARM64_LIB_DIR/libmain.so"
 private const val APK_ORIG_ARM64_LIB_PATH = "$APK_ARM64_LIB_DIR/libmain_orig.so"
 
 private const val LEGACY_MOUNT_SCRIPT_DIR = "/data/adb/umapatcher"
+// v1.4.1: 打包回执常量（sha256 流式缓冲 64KB；回执内 sha256 只取前 16 位十六进制）
+private const val FILE_SHA_BUF_BYTES = 64 * 1024
+private const val RECEIPT_SHA_PREFIX = 16
 
 private val Context.libsDir: File
     get() = filesDir.resolve("libs")
@@ -74,6 +79,10 @@ class AppPatcher(
     private val mergeApks: Boolean = false,
     private val legacyInstall: Boolean = false
 ): Patcher() {
+    // v1.4.1: 打包回执清单——installPlugins 收集每条插件落盘结果，patchApk 收尾随
+    // 成品 apk 内实查结果一并写入 pack_receipt 文件（用户可见目录 + 内部留档双写）
+    private val packedPluginEntries = mutableListOf<String>()
+
     override fun run(context: Context): Boolean {
         if (directInstall && !isDirectInstallAllowed(context))
             return false
@@ -532,14 +541,22 @@ class AppPatcher(
         }
 
         // we're finally done :')
+
+        // v1.4.1: 打包回执——成品 apk 已签名落地，实查内部插件条目并落盘回执
+        writePackReceipt(context, file)
         return true
     }
 
     private fun installPlugins(context: Context, libDir: File, isDirectInstall: Boolean = false) {
+        packedPluginEntries.clear()
         val plugins = PluginManager.enabledPluginFiles(context)
-        if (plugins.isEmpty()) return
+        if (plugins.isEmpty()) {
+            packedPluginEntries.add("plugins: (none enabled)")
+            return
+        }
 
         val installedNames = mutableListOf<String>()
+        packedPluginEntries.add("plugins:")
         for (plugin in plugins) {
             val destName = PluginManager.prefixedName(plugin.name)
             val dest = libDir.resolve(destName)
@@ -553,16 +570,84 @@ class AppPatcher(
 
                 if (success) {
                     installedNames.add(destName)
+                    val packedSize = if (dest.isFile) dest.length() else -1L
+                    val sizeMatch = dest.isFile && dest.length() == plugin.length()
+                    packedPluginEntries.add(
+                        "  OK   ${plugin.name} -> $destName" +
+                            " src=${plugin.length()}B packed=${packedSize}B" +
+                            " size_match=$sizeMatch sha256_16=${fileSha256Prefix(dest)}"
+                    )
                 } else {
+                    packedPluginEntries.add("  FAIL ${plugin.name} -> $destName (copy reported failure)")
                     log(context.getString(R.string.failed_to_install_plugin).format(plugin.name))
                 }
-            } catch (_: Exception) {
+            } catch (ex: Exception) {
+                packedPluginEntries.add(
+                    "  FAIL ${plugin.name} -> $destName (${ex.javaClass.simpleName}: ${ex.message})"
+                )
                 log(context.getString(R.string.failed_to_install_plugin).format(plugin.name))
             }
         }
 
         if (installedNames.isNotEmpty()) {
             log(context.getString(R.string.plugins_patched).format(installedNames.joinToString(", ")))
+        }
+    }
+
+    // v1.4.1: 对插件成品做 sha256 流式摘要，回执只记前 16 位十六进制（对号用）
+    private fun fileSha256Prefix(file: File): String {
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256")
+            file.inputStream().use { input ->
+                val buf = ByteArray(FILE_SHA_BUF_BYTES)
+                var n = input.read(buf)
+                while (n >= 0) {
+                    digest.update(buf, 0, n)
+                    n = input.read(buf)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }.take(RECEIPT_SHA_PREFIX)
+        } catch (ex: Exception) {
+            "unavailable(${ex.javaClass.simpleName})"
+        }
+    }
+
+    // v1.4.1: 打包回执——签名成品 apk 内实查 libhachimi_*.so 条目并与 installPlugins
+    // 清单对账，双写到用户可见目录（getExternalFilesDir）+ 安装器内部留档（pluginsDir）。
+    // 回执失败只记录，绝不影响打包结果。
+    private fun writePackReceipt(context: Context, packedApk: File) {
+        try {
+            val lines = mutableListOf<String>()
+            lines.add("UmaPatcher pack receipt (v1.4.1)")
+            lines.add("time_millis: ${System.currentTimeMillis()}")
+            lines.add("apk: ${packedApk.name} size=${packedApk.length()}B")
+            lines.add("apk_inner_check:")
+            val headers = ZipFile(packedApk).use { zip ->
+                zip.fileHeaders.filter {
+                    it.fileName.startsWith("$APK_ARM64_LIB_DIR/libhachimi_") && it.fileName.endsWith(".so")
+                }
+            }
+            if (headers.isEmpty()) {
+                lines.add("  NO libhachimi_*.so entries inside apk!")
+            } else {
+                for (h in headers) {
+                    lines.add("  ${h.fileName} unpacked=${h.size}B compressed=${h.compressedSize}B")
+                }
+            }
+            lines.addAll(packedPluginEntries)
+            val body = lines.joinToString("\n") + "\n"
+            val receiptName = "pack_receipt_${System.currentTimeMillis()}.txt"
+
+            val extDir = context.getExternalFilesDir(null)
+            if (extDir != null && (extDir.isDirectory || extDir.mkdirs())) {
+                val extFile = File(extDir, receiptName)
+                extFile.writeText(body)
+                log("plugin pack receipt: ${extFile.absolutePath}")
+            }
+            context.pluginsDir.resolve(receiptName).writeText(body)
+        } catch (ex: Exception) {
+            log("pack receipt failed: ${ex.message}")
+            Log.w("UmaPatcher", "writePackReceipt", ex)
         }
     }
 
