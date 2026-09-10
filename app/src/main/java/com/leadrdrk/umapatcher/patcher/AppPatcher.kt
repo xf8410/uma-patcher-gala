@@ -631,7 +631,7 @@ class AppPatcher(
                 lines.add("  NO libhachimi_*.so entries inside apk!")
             } else {
                 for (h in headers) {
-                    lines.add("  ${h.fileName} unpacked=${h.size}B compressed=${h.compressedSize}B")
+                    lines.add("  ${h.fileName} unpacked=${h.uncompressedSize}B compressed=${h.compressedSize}B")
                 }
             }
             lines.addAll(packedPluginEntries)
